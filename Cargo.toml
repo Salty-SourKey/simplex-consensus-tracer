@@ -1,0 +1,30 @@
+[package]
+name = "simplex-trace-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "simplex_trace_tool"
+path = "src/lib.rs"
+
+[[bin]]
+name = "simplex-trace-tool"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true, features = ["json", "http1"] }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["fs"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+regex = "1.11"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+blake3 = "1.5"
+bytes = { workspace = true }
+futures = { workspace = true }
+parking_lot = "0.12"
