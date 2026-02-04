@@ -10,20 +10,17 @@ A visualization tool for analyzing Commonware Simplex consensus protocol traces 
 
 ## Quick Start
 
-1. **Clone next to your Simplex chain**  
-   In the root of the blockchain client that runs the Commonware Simplex engine (e.g., Alto, Tempo), clone this repo
+1. **Run validators with full traces**  
+   Start your validators that runs blockchain client with Commonware Simplex (e.g., Alto, Tempo) with `log_level: trace` (or `--log-level trace`) so consensus events are emitted. Direct each validator’s stdout/stderr to its own file.
 
-2. **Run validators with full traces**  
-   Start your validators with `log_level: trace` (or `--log-level trace`) so consensus events are emitted. Direct each validator’s stdout/stderr to its own file.
-
-3. **Collect logs in log directory**  
+2. **Collect logs in log directory**  
    The visualizer expects files named `validator-{0..n}.log`.
 
-4. **Build and run the visualizer**  
+3. **Build and run the visualizer**  
    From this repository root:  
    `cargo run -p simplex-trace-tool -- --logs /path/to/logs --port 3011`
 
-5. **Open the UI**  
+4. **Open the UI**  
    Navigate to `http://localhost:3011/` in your browser. Toggle between Standard and Pipelining modes from the top-right control.
 
 
