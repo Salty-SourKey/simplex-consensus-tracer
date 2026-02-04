@@ -15,7 +15,23 @@ use crate::state::types::{Event, RawLine};
 use super::extractors;
 
 /// Log line regex pattern
-const LINE_RE: &str = r"^(?P<ts>[^ ]+)\s+(?P<level>[A-Z]+)\s+ThreadId\([^)]+\)\s+(?P<target>.+?):\s+(?P<file>.+?:\d+):\s+(?P<msg>.*)$";
+///
+/// We intentionally accept a very relaxed shape because upstream logs can be
+/// emitted with or without `ThreadId`, source file spans, or padding between
+/// the timestamp and level. The only hard requirements are:
+/// - RFC3339 timestamp
+/// - UPPERCASE level word
+/// - a single token for the target (may contain `:`) followed by the rest of
+///   the message
+///
+/// Examples that must match:
+/// 2026-02-04T12:33:07.043484Z DEBUG engine::tree: received new engine message
+/// 2026-02-04T12:33:07.060579Z  INFO reth_node_events::node: Received block...
+///
+/// The target token is captured as everything up to the first whitespace after
+/// the level, so it may include trailing colons (e.g. `engine::tree:`). We
+/// strip the trailing colon before storing it to keep categorisation stable.
+const LINE_RE: &str = r"^(?P<ts>[^ ]+)\s+(?P<level>[A-Z]+)\s+(?P<target>\S+)\s+(?P<msg>.*)$";
 
 static LOG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(LINE_RE).unwrap()
@@ -31,13 +47,56 @@ pub fn parse_timestamp_ns(ts: &str) -> Option<i128> {
 
 /// Parse a single log line into a RawLine struct
 pub fn parse_line(node_id: u8, line_number: u64, line: &str) -> Option<RawLine> {
-    let caps = LOG_REGEX.captures(line)?;
-    let ts = caps.name("ts")?.as_str();
-    let level = caps.name("level")?.as_str().to_string();
-    let target = caps.name("target")?.as_str().to_string();
-    let file = caps.name("file")?.as_str().to_string();
-    let message = caps.name("msg")?.as_str().to_string();
+    // Prefer strict parsing first for determinism.
+    if let Some(caps) = LOG_REGEX.captures(line) {
+        let ts = caps.name("ts")?.as_str();
+        let level = caps.name("level")?.as_str().to_string();
+        let mut target = caps.name("target")?.as_str().to_string();
+        // Normalise target: drop trailing ':' so category detection is consistent.
+        if target.ends_with(':') {
+            target.pop();
+        }
+        let file = String::from("unknown:0");
+        let message = caps.name("msg")?.as_str().to_string();
+        let timestamp_ns = parse_timestamp_ns(ts)?;
+
+        return Some(RawLine {
+            node_id,
+            line_number,
+            timestamp_ns,
+            level,
+            target,
+            file,
+            message,
+        });
+    }
+
+    // Lenient fallback: accept any line whose first token parses as RFC3339.
+    // This allows us to classify messages even when upstream logging format
+    // changes (e.g., missing thread id, different file spans).
+    let mut parts = line.splitn(3, ' ');
+    let ts = parts.next()?;
+    let level = parts.next().unwrap_or("UNKNOWN").to_string();
+    let rest = parts.next().unwrap_or("");
+
     let timestamp_ns = parse_timestamp_ns(ts)?;
+    // Heuristic: treat the first word in `rest` as target if it contains '::',
+    // otherwise leave target unknown and keep the full remainder as message.
+    let mut rest_parts = rest.splitn(2, ' ');
+    let mut target = rest_parts.next().unwrap_or("").to_string();
+    let message_tail = rest_parts.next().unwrap_or("");
+    if !target.contains("::") {
+        // Reattach to message if this was not a target-like token.
+        target = "unknown".to_string();
+    } else if target.ends_with(':') {
+        target.pop();
+    }
+
+    let message = if target == "unknown" {
+        rest.trim_start().to_string()
+    } else {
+        message_tail.trim_start().to_string()
+    };
 
     Some(RawLine {
         node_id,
@@ -45,7 +104,7 @@ pub fn parse_line(node_id: u8, line_number: u64, line: &str) -> Option<RawLine> 
         timestamp_ns,
         level,
         target,
-        file,
+        file: "unknown:0".to_string(),
         message,
     })
 }
@@ -139,6 +198,14 @@ mod tests {
             msg
         )
     }
+
+    fn sample_relaxed_line(msg: &str) -> String {
+        // Matches the real logs we get from nodes (no ThreadId/file span, extra spaces before INFO)
+        format!(
+            "2026-02-04T12:33:07.043484Z DEBUG engine::tree: {}",
+            msg
+        )
+    }
     
     #[test]
     fn test_parse_line() {
@@ -148,6 +215,16 @@ mod tests {
         assert_eq!(raw.level, "DEBUG");
         assert!(raw.target.contains("voter"));
         assert_eq!(raw.message, "test message");
+    }
+
+    #[test]
+    fn test_parse_line_relaxed_format() {
+        let raw = parse_line(0, 42, &sample_relaxed_line("received new engine message"))
+            .expect("relaxed parse");
+        assert_eq!(raw.level, "DEBUG");
+        assert_eq!(raw.target, "engine::tree"); // trailing ':' stripped
+        assert_eq!(raw.line_number, 42);
+        assert_eq!(raw.message, "received new engine message");
     }
     
     #[test]
