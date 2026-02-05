@@ -619,26 +619,32 @@
       }
     });
 
-    // For each node/view pair, capture the earliest NotarizedBuilt (kind_tag 6).
-    const nodeViewNotarized = new Map(); // "node:view" -> ts
+    // For each node/view pair, capture the earliest certificate build:
+    // NotarizedBuilt (6) and NullifiedBuilt (9). Sorting is controlled above,
+    // and we only store minima to keep the anchor deterministic.
+    const nodeViewNotarized = new Map();   // "node:view" -> ts
+    const nodeViewNullified = new Map();   // "node:view" -> ts
     state.events.forEach(ev => {
       if (ev.view === null || ev.view === undefined) return;
-      if (ev.kind_tag !== 6) return;
       const key = `${ev.raw.node_id}:${ev.view}`;
       const ts = BigInt(ev.raw.timestamp_ns);
-      const prev = nodeViewNotarized.get(key);
-      if (prev === undefined || ts < prev) {
-        nodeViewNotarized.set(key, ts);
+      if (ev.kind_tag === 6) {
+        const prev = nodeViewNotarized.get(key);
+        if (prev === undefined || ts < prev) nodeViewNotarized.set(key, ts);
+      } else if (ev.kind_tag === 9) {
+        const prev = nodeViewNullified.get(key);
+        if (prev === undefined || ts < prev) nodeViewNullified.set(key, ts);
       }
     });
 
-    // View V starts at the V leader's NotarizedBuilt for view V-1.
+    // View V starts at the V leader's certificate for view V-1.
+    // Prefer NotarizedBuilt; fall back to NullifiedBuilt so nullified views still anchor.
     const viewStartTimes = new Map(); // view -> start timestamp
     const sortedViews = Array.from(viewLeaders.keys()).sort((a, b) => a - b);
     sortedViews.forEach(viewNum => {
       const leader = viewLeaders.get(viewNum);
       const prevKey = `${leader}:${viewNum - 1}`;
-      const startTs = nodeViewNotarized.get(prevKey);
+      const startTs = nodeViewNotarized.get(prevKey) ?? nodeViewNullified.get(prevKey);
       if (startTs !== undefined) {
         viewStartTimes.set(viewNum, startTs);
       }
