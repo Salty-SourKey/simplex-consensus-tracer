@@ -160,5 +160,4 @@ cargo run -p simplex-trace-tool -- --logs /path/to/logs --port 3011
 cargo test -p simplex-trace-tool
 
 ## License
-
 MIT License
