@@ -473,8 +473,8 @@
     // Shared time axis
     drawPipelineTimeAxis(w, h, timeAxisHeight, labelWidth);
 
-    // View alignment markers
-    drawPipelineViewMarkers(allVisibleEvents, w, topPanelHeight, bottomPanelY, bottomPanelHeight, labelWidth);
+    // View alignment markers (reuse deterministic band computation from standard view)
+    drawViewBands(w, h, headerHeight + 6);
   }
 
   function drawPipelinePanel({ events, nodes, panelY, panelHeight, laneHeight, headerHeight, labelWidth, canvasWidth, label, labelColor, bgColor, gridColor, broadcastTags }) {
@@ -601,89 +601,46 @@
     }
   }
 
-  function drawPipelineViewMarkers(events, w, topPanelHeight, bottomPanelY, bottomPanelHeight, labelWidth) {
-    const viewStarts = new Map();
-    
-    events.forEach(ev => {
-      if (ev.view === null || ev.view === undefined) return;
-      const ts = BigInt(ev.raw.timestamp_ns);
-      if (!viewStarts.has(ev.view) || ts < viewStarts.get(ev.view)) {
-        viewStarts.set(ev.view, ts);
-      }
-    });
-    
-    ctx.save();
-    ctx.globalAlpha = 1;
-    ctx.setLineDash(VIEW_SEPARATOR_STYLE.dash);
-    ctx.lineWidth = VIEW_SEPARATOR_STYLE.lineWidth;
-    ctx.strokeStyle = VIEW_SEPARATOR_STYLE.stroke;
-    ctx.font = VIEW_SEPARATOR_STYLE.labelFont;
-    ctx.textAlign = 'left';
-    
-    viewStarts.forEach((ts, viewNum) => {
-      const x = timeToX(ts, w);
-      if (x === null || x < labelWidth) return;
-
-      // Keep separator out of the shared time axis area at the bottom.
-      const axisTop = bottomPanelY + bottomPanelHeight;
-      const separatorEndY = Math.max(0, axisTop ); // leave 6px breathing room above labels
-      
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, separatorEndY);
-      ctx.stroke();
-      
-      ctx.fillStyle = VIEW_SEPARATOR_STYLE.labelColor;
-      ctx.fillText(`v${viewNum}`, x + 4, topPanelHeight - 4);
-    });
-    
-    ctx.setLineDash([]);
-    ctx.restore();
-  }
-
   function drawViewBands(w, h, topPadding) {
-    // Find leader for each view: the node that has ProposalRequested (kind_tag=2) event
-    const viewLeaders = new Map(); // view -> leader node_id
-    
+    // Determine leader for each view (ProposalRequested = kind_tag 2).
+    // Map iteration is avoided for determinism: collect then sort by view.
+    const leaderEntries = [];
     state.events.forEach(ev => {
       if (ev.view === null || ev.view === undefined) return;
-      if (ev.kind_tag === 2 && !viewLeaders.has(ev.view)) {
-        viewLeaders.set(ev.view, ev.raw.node_id);
+      if (ev.kind_tag === 2) {
+        leaderEntries.push({ view: ev.view, leader: ev.raw.node_id });
+      }
+    });
+    leaderEntries.sort((a, b) => a.view - b.view);
+    const viewLeaders = new Map();
+    leaderEntries.forEach(entry => {
+      if (!viewLeaders.has(entry.view)) {
+        viewLeaders.set(entry.view, entry.leader);
       }
     });
 
-    // Build index of NotarizedBuilt (kind_tag=6) and NullifiedBuilt (kind_tag=9) events by node:view
-    const nodeViewNotarizedBuilt = new Map(); // "node:view" -> timestamp_ns
-    const nodeViewNullifiedBuilt = new Map(); // "node:view" -> timestamp_ns
-    
+    // For each node/view pair, capture the earliest NotarizedBuilt (kind_tag 6).
+    const nodeViewNotarized = new Map(); // "node:view" -> ts
     state.events.forEach(ev => {
       if (ev.view === null || ev.view === undefined) return;
-      if (ev.kind_tag === 6) {
-        const key = `${ev.raw.node_id}:${ev.view}`;
-        if (!nodeViewNotarizedBuilt.has(key)) {
-          nodeViewNotarizedBuilt.set(key, BigInt(ev.raw.timestamp_ns));
-        }
-      }
-      if (ev.kind_tag === 9) {
-        const key = `${ev.raw.node_id}:${ev.view}`;
-        if (!nodeViewNullifiedBuilt.has(key)) {
-          nodeViewNullifiedBuilt.set(key, BigInt(ev.raw.timestamp_ns));
-        }
+      if (ev.kind_tag !== 6) return;
+      const key = `${ev.raw.node_id}:${ev.view}`;
+      const ts = BigInt(ev.raw.timestamp_ns);
+      const prev = nodeViewNotarized.get(key);
+      if (prev === undefined || ts < prev) {
+        nodeViewNotarized.set(key, ts);
       }
     });
 
-    // Build view start times: View V start = leader's NotarizedBuilt(V-1) or NullifiedBuilt(V-1)
+    // View V starts at the V leader's NotarizedBuilt for view V-1.
     const viewStartTimes = new Map(); // view -> start timestamp
-    
-    viewLeaders.forEach((leader, viewNum) => {
-      const prevView = viewNum - 1;
-      const key = `${leader}:${prevView}`;
-      const notarizedBuilt = nodeViewNotarizedBuilt.get(key);
-      const nullifiedBuilt = nodeViewNullifiedBuilt.get(key);
-      // Use NotarizedBuilt if available, otherwise NullifiedBuilt (after nullification)
-      const viewStart = notarizedBuilt !== undefined ? notarizedBuilt : nullifiedBuilt;
-      if (viewStart !== undefined) {
-        viewStartTimes.set(viewNum, viewStart);
+    const sortedViews = Array.from(viewLeaders.keys()).sort((a, b) => a - b);
+    sortedViews.forEach(viewNum => {
+      const leader = viewLeaders.get(viewNum);
+      const prevKey = `${leader}:${viewNum - 1}`;
+      const startTs = nodeViewNotarized.get(prevKey);
+      if (startTs !== undefined) {
+        viewStartTimes.set(viewNum, startTs);
       }
     });
 
